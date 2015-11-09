@@ -24,11 +24,13 @@
 //
 
 #import "GTBranch.h"
-#import "GTReference.h"
-#import "GTEnumerator.h"
-#import "GTRepository.h"
+
 #import "GTCommit.h"
+#import "GTEnumerator.h"
+#import "GTOID.h"
+#import "GTReference.h"
 #import "GTRemote.h"
+#import "GTRepository.h"
 #import "NSError+Git.h"
 
 #import "git2/branch.h"
@@ -38,18 +40,18 @@
 @implementation GTBranch
 
 - (NSString *)description {
-  return [NSString stringWithFormat:@"<%@: %p> name: %@, shortName: %@, sha: %@, remoteName: %@, repository: %@", NSStringFromClass([self class]), self, self.name, self.shortName, self.SHA, self.remoteName, self.repository];
+  return [NSString stringWithFormat:@"<%@: %p> name: %@, shortName: %@, sha: %@, remoteName: %@, repository: %@", NSStringFromClass([self class]), self, self.name, self.shortName, self.OID, self.remoteName, self.repository];
 }
 
 - (BOOL)isEqual:(GTBranch *)otherBranch {
 	if (otherBranch == self) return YES;
 	if (![otherBranch isKindOfClass:self.class]) return NO;
 
-	return [self.name isEqual:otherBranch.name] && [self.SHA isEqual:otherBranch.SHA];
+	return [self.name isEqual:otherBranch.name] && [self.OID isEqual:otherBranch.OID];
 }
 
 - (NSUInteger)hash {
-	return self.name.hash ^ self.SHA.hash;
+	return self.name.hash ^ self.OID.hash;
 }
 
 
@@ -63,11 +65,16 @@
 	return @"refs/remotes/";
 }
 
-+ (id)branchWithReference:(GTReference *)ref repository:(GTRepository *)repo {
++ (nullable instancetype)branchWithReference:(GTReference *)ref repository:(GTRepository *)repo {
 	return [[self alloc] initWithReference:ref repository:repo];
 }
 
-- (id)initWithReference:(GTReference *)ref repository:(GTRepository *)repo {
+- (instancetype)init {
+	NSAssert(NO, @"Call to an unavailable initializer.");
+	return nil;
+}
+
+- (nullable instancetype)initWithReference:(GTReference *)ref repository:(GTRepository *)repo {
 	NSParameterAssert(ref != nil);
 	NSParameterAssert(repo != nil);
 
@@ -100,8 +107,8 @@
 	return @(name);
 }
 
-- (NSString *)SHA {
-	return self.reference.targetSHA;
+- (GTOID *)OID {
+	return self.reference.targetOID;
 }
 
 - (NSString *)remoteName {
@@ -118,20 +125,20 @@
 	return [[NSString alloc] initWithBytes:name length:end - name encoding:NSUTF8StringEncoding];
 }
 
-- (GTCommit *)targetCommitAndReturnError:(NSError **)error {
-	if (self.SHA == nil) {
+- (GTCommit *)targetCommitWithError:(NSError **)error {
+	if (self.OID == nil) {
 		if (error != NULL) *error = GTReference.invalidReferenceError;
 		return nil;
 	}
 
-	return [self.repository lookUpObjectBySHA:self.SHA objectType:GTObjectTypeCommit error:error];
+	return [self.repository lookUpObjectByOID:self.OID objectType:GTObjectTypeCommit error:error];
 }
 
 - (NSUInteger)numberOfCommitsWithError:(NSError **)error {
 	GTEnumerator *enumerator = [[GTEnumerator alloc] initWithRepository:self.repository error:error];
 	if (enumerator == nil) return NSNotFound;
 
-	if (![enumerator pushSHA:self.SHA error:error]) return NSNotFound;
+	if (![enumerator pushSHA:self.OID.SHA error:error]) return NSNotFound;
 	return [enumerator countRemainingObjects:error];
 }
 
@@ -144,22 +151,7 @@
 }
 
 - (NSArray *)uniqueCommitsRelativeToBranch:(GTBranch *)otherBranch error:(NSError **)error {
-	NSParameterAssert(otherBranch != nil);
-	
-	GTCommit *mergeBase = [self.repository mergeBaseBetweenFirstOID:self.reference.OID secondOID:otherBranch.reference.OID error:error];
-	if (mergeBase == nil) return nil;
-	
-	GTEnumerator *enumerator = [[GTEnumerator alloc] initWithRepository:self.repository error:error];
-	if (enumerator == nil) return nil;
-	
-	[enumerator resetWithOptions:GTEnumeratorOptionsTimeSort];
-	
-	BOOL success = [enumerator pushSHA:self.SHA error:error];
-	if (!success) return nil;
-
-	success = [enumerator hideSHA:mergeBase.SHA error:error];
-	if (!success) return nil;
-
+	GTEnumerator *enumerator = [self.repository enumeratorForUniqueCommitsFromOID:self.OID relativeToOID:otherBranch.OID error:error];
 	return [enumerator allObjectsWithError:error];
 }
 
@@ -206,7 +198,12 @@
 }
 
 - (BOOL)updateTrackingBranch:(GTBranch *)trackingBranch error:(NSError **)error {
-	int result = git_branch_set_upstream(self.reference.git_reference, trackingBranch.shortName.UTF8String);
+	int result = GIT_ENOTFOUND;
+	if (trackingBranch.branchType == GTBranchTypeRemote) {
+		result = git_branch_set_upstream(self.reference.git_reference, [trackingBranch.name stringByReplacingOccurrencesOfString:[GTBranch remoteNamePrefix] withString:@""].UTF8String);
+	} else {
+		result = git_branch_set_upstream(self.reference.git_reference, trackingBranch.shortName.UTF8String);
+	}
 	if (result != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:result description:@"Failed to update tracking branch for %@", self];
 		return NO;
@@ -223,19 +220,7 @@
 }
 
 - (BOOL)calculateAhead:(size_t *)ahead behind:(size_t *)behind relativeTo:(GTBranch *)branch error:(NSError **)error {
-	if (branch == nil) {
-		*ahead = 0;
-		*behind = 0;
-		return YES;
-	}
-
-	int errorCode = git_graph_ahead_behind(ahead, behind, self.repository.git_repository, self.reference.git_oid, branch.reference.git_oid);
-	if (errorCode != GIT_OK && error != NULL) {
-		*error = [NSError git_errorFor:errorCode description:@"Failed to calculate ahead/behind count of %@ relative to %@", self, branch];
-		return NO;
-	}
-
-	return YES;
+	return [self.repository calculateAhead:ahead behind:behind ofOID:self.OID relativeToOID:branch.OID error:error];
 }
 
 @end

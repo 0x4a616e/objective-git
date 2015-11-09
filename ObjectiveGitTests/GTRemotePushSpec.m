@@ -11,36 +11,7 @@
 #import <Quick/Quick.h>
 
 #import "QuickSpec+GTFixtures.h"
-
-// Helper to quickly create commits
-GTCommit *(^createCommitInRepository)(NSString *, NSData *, NSString *, GTRepository *) = ^ GTCommit * (NSString *message, NSData *fileData, NSString *fileName, GTRepository *repo) {
-	GTTreeBuilder *treeBuilder = [[GTTreeBuilder alloc] initWithTree:nil repository:repo error:nil];
-	[treeBuilder addEntryWithData:fileData fileName:fileName fileMode:GTFileModeBlob error:nil];
-
-	GTTree *testTree = [treeBuilder writeTree:nil];
-
-	// We need the parent commit to make the new one
-	GTReference *headReference = [repo headReferenceWithError:nil];
-
-	GTEnumerator *commitEnum = [[GTEnumerator alloc] initWithRepository:repo error:nil];
-	[commitEnum pushSHA:[headReference targetSHA] error:nil];
-	GTCommit *parent = [commitEnum nextObject];
-
-	GTCommit *testCommit = [repo createCommitWithTree:testTree message:message parents:@[ parent ] updatingReferenceNamed:headReference.name error:nil];
-	expect(testCommit).notTo(beNil());
-
-	return testCommit;
-};
-
-GTBranch *(^localBranchWithName)(NSString *, GTRepository *) = ^ GTBranch * (NSString *branchName, GTRepository *repo) {
-	NSString *reference = [GTBranch.localNamePrefix stringByAppendingString:branchName];
-	NSArray *branches = [repo branchesWithPrefix:reference error:NULL];
-	expect(branches).notTo(beNil());
-	expect(@(branches.count)).to(equal(@1));
-	expect(((GTBranch *)branches[0]).shortName).to(equal(branchName));
-
-	return branches[0];
-};
+#import "GTUtilityFunctions.h"
 
 #pragma mark - GTRemotePushSpec
 
@@ -100,32 +71,6 @@ describe(@"pushing", ^{
 			error = NULL;
 		});
 
-		context(@"when -pushBranch: is given invalid parameters", ^{
-			it(@"needs a non-nil branch", ^{
-				XCTAssertThrowsSpecificNamed([localRepo pushBranch:nil toRemote:remote withOptions:nil error:&error progress:NULL], NSException, NSInternalInconsistencyException, @"should throw NSInternalInconsistencyException");
-			});
-
-			it(@"needs a non-nil remote", ^{
-				GTBranch *masterBranch = localBranchWithName(@"master", localRepo);
-				XCTAssertThrowsSpecificNamed([localRepo pushBranch:masterBranch toRemote:nil withOptions:nil error:&error progress:NULL], NSException, NSInternalInconsistencyException, @"should throw NSInternalInconsistencyException");
-			});
-		});
-
-		context(@"when -pushBranches: is given invalid parameters", ^{
-			it(@"needs a non-nil branch array", ^{
-				XCTAssertThrowsSpecificNamed([localRepo pushBranches:nil toRemote:remote withOptions:nil error:&error progress:NULL], NSException, NSInternalInconsistencyException, @"should throw NSInternalInconsistencyException");
-			});
-
-			it(@"needs a non-empty branch array", ^{
-				XCTAssertThrowsSpecificNamed([localRepo pushBranches:@[] toRemote:remote withOptions:nil error:&error progress:NULL], NSException, NSInternalInconsistencyException, @"should throw NSInternalInconsistencyException");
-			});
-
-			it(@"needs a non-nil remote", ^{
-				GTBranch *masterBranch = localBranchWithName(@"master", localRepo);
-				XCTAssertThrowsSpecificNamed([localRepo pushBranches:@[masterBranch] toRemote:nil withOptions:nil error:&error progress:NULL], NSException, NSInternalInconsistencyException, @"should throw NSInternalInconsistencyException");
-			});
-		});
-
 		context(@"when the local and remote branches are in sync", ^{
 			it(@"should push no commits", ^{
 				GTBranch *masterBranch = localBranchWithName(@"master", localRepo);
@@ -141,7 +86,7 @@ describe(@"pushing", ^{
 				}];
 				expect(error).to(beNil());
 				expect(@(result)).to(beTruthy());
-				expect(@(transferProgressed)).to(beFalsy()); // Local transport doesn't currently call progress callbacks
+				expect(@(transferProgressed)).to(beTruthy());
 
 				// Same number of commits after push, refresh branch first
 				remoteMasterBranch = localBranchWithName(@"master", remoteRepo);
@@ -178,7 +123,7 @@ describe(@"pushing", ^{
 			}];
 			expect(error).to(beNil());
 			expect(@(result)).to(beTruthy());
-			expect(@(transferProgressed)).to(beFalsy()); // Local transport doesn't currently call progress callbacks
+			expect(@(transferProgressed)).to(beTruthy());
 
 			// Number of commits on tracking branch after push
 			localTrackingBranch = [masterBranch trackingBranchWithError:&error success:&success];
@@ -212,7 +157,7 @@ describe(@"pushing", ^{
 			GTBranch *branch1 = localBranchWithName(@"master", localRepo);
 
 			// Create refs/heads/new_master on local
-			[localRepo createReferenceNamed:@"refs/heads/new_master" fromReference:branch1.reference committer:localRepo.userSignatureForNow message:@"Create new_master branch" error:&error];
+			[localRepo createReferenceNamed:@"refs/heads/new_master" fromReference:branch1.reference message:@"Create new_master branch" error:&error];
 			GTBranch *branch2 = localBranchWithName(@"new_master", localRepo);
 
 			BOOL result = [localRepo pushBranches:@[ branch1, branch2 ] toRemote:remote withOptions:nil error:&error progress:NULL];

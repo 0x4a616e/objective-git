@@ -25,8 +25,16 @@
 	return (GTSubmoduleIgnoreRule)git_submodule_ignore(self.git_submodule);
 }
 
-- (void)setIgnoreRule:(GTSubmoduleIgnoreRule)ignoreRule {
-	git_submodule_set_ignore(self.git_submodule, (git_submodule_ignore_t)ignoreRule);
+- (GTSubmodule *)submoduleByUpdatingIgnoreRule:(GTSubmoduleIgnoreRule)ignoreRule error:(NSError **)error {
+	int result = git_submodule_set_ignore(self.parentRepository.git_repository, git_submodule_name(self.git_submodule), (git_submodule_ignore_t)ignoreRule);
+	if (result != GIT_OK) {
+		if (error != NULL) {
+			*error = [NSError git_errorFor:result description:@"Couldn't set submodule ignore rule."];
+		}
+		return nil;
+	}
+
+	return [self.parentRepository submoduleWithName:self.name error:error];
 }
 
 - (GTOID *)indexOID {
@@ -79,7 +87,12 @@
 	}
 }
 
-- (id)initWithGitSubmodule:(git_submodule *)submodule parentRepository:(GTRepository *)repository {
+- (instancetype)init {
+	NSAssert(NO, @"Call to an unavailable initializer.");
+	return nil;
+}
+
+- (instancetype)initWithGitSubmodule:(git_submodule *)submodule parentRepository:(GTRepository *)repository {
 	NSParameterAssert(submodule != NULL);
 	NSParameterAssert(repository != nil);
 
@@ -94,15 +107,19 @@
 
 #pragma mark Inspection
 
-- (GTSubmoduleStatus)status:(NSError **)error {
+- (GTSubmoduleStatus)statusWithIgnoreRule:(GTSubmoduleIgnoreRule)ignoreRule error:(NSError **)error {
 	unsigned status;
-	int gitError = git_submodule_status(&status, self.git_submodule);
+	int gitError = git_submodule_status(&status, self.parentRepository.git_repository, git_submodule_name(self.git_submodule), (git_submodule_ignore_t)ignoreRule);
 	if (gitError != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to get submodule %@ status.", self.name];
 		return GTSubmoduleStatusUnknown;
 	}
 
 	return status;
+}
+
+- (GTSubmoduleStatus)status:(NSError **)error {
+	return [self statusWithIgnoreRule:self.ignoreRule error:error];
 }
 
 #pragma mark Manipulation
@@ -127,7 +144,7 @@
 	return YES;
 }
 
-- (GTRepository *)submoduleRepository:(NSError **)error {
+- (nullable GTRepository *)submoduleRepository:(NSError **)error {
 	git_repository *repo;
 	int gitError = git_submodule_open(&repo, self.git_submodule);
 	if (gitError != GIT_OK) {

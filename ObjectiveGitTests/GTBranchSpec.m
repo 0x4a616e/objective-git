@@ -121,13 +121,13 @@ describe(@"-reloadedBranchWithError:", ^{
 	it(@"should reload the branch from disk", ^{
 		static NSString * const originalSHA = @"a4bca6b67a5483169963572ee3da563da33712f7";
 		static NSString * const updatedSHA = @"6b0c1c8b8816416089c534e474f4c692a76ac14f";
-		expect([masterBranch targetCommitAndReturnError:NULL].SHA).to(equal(originalSHA));
-		[masterBranch.reference referenceByUpdatingTarget:updatedSHA committer:nil message:nil error:NULL];
+		expect([masterBranch targetCommitWithError:NULL].SHA).to(equal(originalSHA));
+		[masterBranch.reference referenceByUpdatingTarget:updatedSHA message:nil error:NULL];
 
 		GTBranch *reloadedBranch = [masterBranch reloadedBranchWithError:NULL];
 		expect(reloadedBranch).notTo(beNil());
-		expect([reloadedBranch targetCommitAndReturnError:NULL].SHA).to(equal(updatedSHA));
-		expect([masterBranch targetCommitAndReturnError:NULL].SHA).to(equal(originalSHA));
+		expect([reloadedBranch targetCommitWithError:NULL].SHA).to(equal(updatedSHA));
+		expect([masterBranch targetCommitWithError:NULL].SHA).to(equal(originalSHA));
 	});
 });
 
@@ -158,7 +158,7 @@ describe(@"-trackingBranchWithError:success:", ^{
 		GTOID *OID = [[GTOID alloc] initWithSHA:@"6b0c1c8b8816416089c534e474f4c692a76ac14f"];
 
 		NSError *error = nil;
-		GTReference *otherRef = [repository createReferenceNamed:@"refs/heads/yet-another-branch" fromOID:OID committer:nil message:nil error:&error];
+		GTReference *otherRef = [repository createReferenceNamed:@"refs/heads/yet-another-branch" fromOID:OID message:nil error:&error];
 		expect(otherRef).notTo(beNil());
 		expect(error).to(beNil());
 
@@ -174,7 +174,7 @@ describe(@"-trackingBranchWithError:success:", ^{
 
 	it(@"should return itself for a remote branch", ^{
 		NSError *error = nil;
-		GTReference *remoteRef = [GTReference referenceByLookingUpReferencedNamed:@"refs/remotes/origin/master" inRepository:repository error:&error];
+		GTReference *remoteRef = [repository lookUpReferenceWithName:@"refs/remotes/origin/master" error:&error];
 		expect(remoteRef).notTo(beNil());
 		expect(error).to(beNil());
 
@@ -227,6 +227,37 @@ describe(@"-updateTrackingBranch:error:", ^{
 		trackingBranch = [masterBranch trackingBranchWithError:NULL success:&success];
 		expect(trackingBranch).to(beNil());
 		expect(@(success)).to(beTruthy());
+	});
+		
+	it(@"should set a remote tracking branch without branches amount change", ^{
+		GTRepository *repository = self.testAppForkFixtureRepository;
+		expect(repository).notTo(beNil());
+			
+		NSError *error = nil;
+		BOOL success = NO;
+		GTBranch *remoteBranch = [repository lookUpBranchWithName:@"github/BranchC" type:GTBranchTypeRemote success:&success error:&error];
+		expect(remoteBranch).notTo(beNil());
+		expect(error).to(beNil());
+			
+		NSArray *beforeBranches = [repository branches:&error];
+		expect(error).to(beNil());
+
+		GTBranch *localBranch = [repository createBranchNamed:remoteBranch.shortName fromOID:remoteBranch.OID message:nil error:&error];
+		expect(localBranch).notTo(beNil());
+		expect(error).to(beNil());
+			
+		NSArray *inBranches = [repository branches:&error];
+		expect(error).to(beNil());
+
+		[localBranch updateTrackingBranch:remoteBranch error:&error];
+		expect(error).to(beNil());
+			
+		NSArray *afterBranches = [repository branches:&error];
+		expect(error).to(beNil());
+		
+		expect(@(beforeBranches.count + 1)).to(equal(@(inBranches.count)));
+		expect(@(beforeBranches.count)).to(equal(@(afterBranches.count)));
+		
 	});
 });
 

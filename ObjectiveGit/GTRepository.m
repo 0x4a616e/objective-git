@@ -51,6 +51,7 @@
 #import "NSArray+StringArray.h"
 #import "NSError+Git.h"
 #import "NSString+Git.h"
+#import "GTRepository+References.h"
 
 #import "git2.h"
 
@@ -90,6 +91,9 @@ typedef struct {
 @implementation GTRepository
 
 - (NSString *)description {
+	if (self.isBare) {
+		return [NSString stringWithFormat:@"<%@: %p> (bare) gitDirectoryURL: %@", self.class, self, self.gitDirectoryURL];
+	}
 	return [NSString stringWithFormat:@"<%@: %p> fileURL: %@", self.class, self, self.fileURL];
 }
 
@@ -106,21 +110,6 @@ typedef struct {
 }
 
 #pragma mark API
-
-+ (BOOL)isAGitDirectory:(NSURL *)directory {
-	NSFileManager *fm = [[NSFileManager alloc] init];
-	BOOL isDir = NO;
-	NSURL *headFileURL = [directory URLByAppendingPathComponent:@"HEAD"];
-
-	if ([fm fileExistsAtPath:headFileURL.path isDirectory:&isDir] && !isDir) {
-		NSURL *objectsDir = [directory URLByAppendingPathComponent:@"objects"];
-		if ([fm fileExistsAtPath:objectsDir.path isDirectory:&isDir] && isDir) {
-			return YES;
-		}
-	}
-
-	return NO;
-}
 
 + (instancetype)initializeEmptyRepositoryAtFileURL:(NSURL *)localFileURL options:(NSDictionary *)optionsDict error:(NSError **)error {
 	if (!localFileURL.isFileURL || localFileURL.path == nil) {
@@ -152,11 +141,16 @@ typedef struct {
 	return [[self alloc] initWithGitRepository:repository];
 }
 
-+ (id)repositoryWithURL:(NSURL *)localFileURL error:(NSError **)error {
++ (instancetype)repositoryWithURL:(NSURL *)localFileURL error:(NSError **)error {
 	return [[self alloc] initWithURL:localFileURL error:error];
 }
 
-- (id)initWithGitRepository:(git_repository *)repository {
+- (instancetype)init {
+	NSAssert(NO, @"Call to an unavailable initializer.");
+	return nil;
+}
+
+- (instancetype)initWithGitRepository:(git_repository *)repository {
 	NSParameterAssert(repository != nil);
 
 	self = [super init];
@@ -167,7 +161,7 @@ typedef struct {
 	return self;
 }
 
-- (id)initWithURL:(NSURL *)localFileURL error:(NSError **)error {
+- (instancetype)initWithURL:(NSURL *)localFileURL error:(NSError **)error {
 	if (![localFileURL isFileURL] || localFileURL.path == nil) {
 		if (error != NULL) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnsupportedSchemeError userInfo:@{ NSLocalizedDescriptionKey: NSLocalizedString(@"Invalid file path URL to open.", @"") }];
 		return nil;
@@ -184,7 +178,7 @@ typedef struct {
 }
 
 
-typedef void(^GTTransferProgressBlock)(const git_transfer_progress *progress);
+typedef void(^GTTransferProgressBlock)(const git_transfer_progress *progress, BOOL *stop);
 
 static void checkoutProgressCallback(const char *path, size_t completedSteps, size_t totalSteps, void *payload) {
 	if (payload == NULL) return;
@@ -197,8 +191,10 @@ static int transferProgressCallback(const git_transfer_progress *progress, void 
 	if (payload == NULL) return 0;
 	struct GTClonePayload *pld = payload;
 	if (pld->transferProgressBlock == NULL) return 0;
-	pld->transferProgressBlock(progress);
-	return 0;
+	
+	BOOL stop = NO;
+	pld->transferProgressBlock(progress, &stop);
+	return (stop ? GIT_EUSER : 0);
 }
 
 struct GTClonePayload {
@@ -209,20 +205,13 @@ struct GTClonePayload {
 static int remoteCreate(git_remote **remote, git_repository *repo, const char *name, const char *url, void *payload)
 {
 	int error;
-	struct GTRemoteCreatePayload *pld = payload;
-	git_remote_callbacks *callbacks = &pld->remoteCallbacks;
-
 	if ((error = git_remote_create(remote, repo, name, url)) < 0)
 		return error;
 
-	return git_remote_set_callbacks(*remote, callbacks);
+	return GIT_OK;
 }
 
-struct GTRemoteCreatePayload {
-	git_remote_callbacks remoteCallbacks;
-};
-
-+ (id)cloneFromURL:(NSURL *)originURL toWorkingDirectory:(NSURL *)workdirURL options:(NSDictionary *)options error:(NSError **)error transferProgressBlock:(void (^)(const git_transfer_progress *))transferProgressBlock checkoutProgressBlock:(void (^)(NSString *path, NSUInteger completedSteps, NSUInteger totalSteps))checkoutProgressBlock {
++ (instancetype)cloneFromURL:(NSURL *)originURL toWorkingDirectory:(NSURL *)workdirURL options:(NSDictionary *)options error:(NSError **)error transferProgressBlock:(void (^)(const git_transfer_progress *, BOOL *stop))transferProgressBlock checkoutProgressBlock:(void (^)(NSString *__nullable path, NSUInteger completedSteps, NSUInteger totalSteps))checkoutProgressBlock {
 
 	git_clone_options cloneOptions = GIT_CLONE_OPTIONS_INIT;
 
@@ -234,7 +223,7 @@ struct GTRemoteCreatePayload {
 
 	if (withCheckout) {
 		git_checkout_options checkoutOptions = GIT_CHECKOUT_OPTIONS_INIT;
-		checkoutOptions.checkout_strategy = GIT_CHECKOUT_SAFE_CREATE;
+		checkoutOptions.checkout_strategy = GIT_CHECKOUT_SAFE;
 		checkoutOptions.progress_cb = checkoutProgressCallback;
 		checkoutOptions.progress_payload = (__bridge void *)checkoutProgressBlock;
 		cloneOptions.checkout_opts = checkoutOptions;
@@ -245,22 +234,19 @@ struct GTRemoteCreatePayload {
 		.credProvider = {provider},
 	};
 
-	cloneOptions.remote_callbacks.version = GIT_REMOTE_CALLBACKS_VERSION;
+	git_fetch_options fetchOptions = GIT_FETCH_OPTIONS_INIT;
+	fetchOptions.callbacks.version = GIT_REMOTE_CALLBACKS_VERSION;
 
 	if (provider) {
-		cloneOptions.remote_callbacks.credentials = GTCredentialAcquireCallback;
+		fetchOptions.callbacks.credentials = GTCredentialAcquireCallback;
 	}
 
 	payload.transferProgressBlock = transferProgressBlock;
 
-	cloneOptions.remote_callbacks.transfer_progress = transferProgressCallback;
-	cloneOptions.remote_callbacks.payload = &payload;
-
-	struct GTRemoteCreatePayload remoteCreatePayload;
-	remoteCreatePayload.remoteCallbacks = cloneOptions.remote_callbacks;
-
+	fetchOptions.callbacks.transfer_progress = transferProgressCallback;
+	fetchOptions.callbacks.payload = &payload;
+	cloneOptions.fetch_opts = fetchOptions;
 	cloneOptions.remote_cb = remoteCreate;
-	cloneOptions.remote_cb_payload = &remoteCreatePayload;
 
 	BOOL localClone = [options[GTRepositoryCloneOptionsCloneLocal] boolValue];
 	if (localClone) {
@@ -292,6 +278,8 @@ struct GTRemoteCreatePayload {
 	}
 
 	return [[self alloc] initWithGitRepository:repository];
+
+	return nil;
 }
 
 - (id)lookUpObjectByGitOid:(const git_oid *)oid objectType:(GTObjectType)type error:(NSError **)error {
@@ -366,7 +354,11 @@ struct GTRemoteCreatePayload {
 	git_reference *headRef;
 	int gitError = git_repository_head(&headRef, self.git_repository);
 	if (gitError != GIT_OK) {
-		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to get HEAD"];
+		NSString *unborn = @"";
+		if (gitError == GIT_EUNBORNBRANCH) {
+			unborn = @" (unborn)";
+		}
+		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to get HEAD%@", unborn];
 		return nil;
 	}
 
@@ -399,7 +391,7 @@ struct GTRemoteCreatePayload {
 	for (NSString *refName in references) {
 		if (![refName hasPrefix:prefix]) continue;
 
-		GTReference *ref = [[GTReference alloc] initByLookingUpReferenceNamed:refName inRepository:self error:error];
+		GTReference *ref = [self lookUpReferenceWithName:refName error:error];
 		if (ref == nil) continue;
 
 		GTBranch *branch = [[GTBranch alloc] initWithReference:ref repository:self];
@@ -455,7 +447,9 @@ static int GTRepositoryForeachTagCallback(const char *name, git_oid *oid, void *
 	GTTag *tag = (GTTag *)[info->myself lookUpObjectByGitOid:oid objectType:GTObjectTypeTag error:NULL];
 
 	BOOL stop = NO;
-	info->block(tag, &stop);
+	if (tag != nil) {
+		info->block(tag, &stop);
+	}
 
 	return stop ? GIT_EUSER : 0;
 }
@@ -491,12 +485,12 @@ static int GTRepositoryForeachTagCallback(const char *name, git_oid *oid, void *
 	return [currentBranch numberOfCommitsWithError:error];
 }
 
-- (GTReference *)createReferenceNamed:(NSString *)name fromOID:(GTOID *)targetOID committer:(GTSignature *)signature message:(NSString *)message error:(NSError **)error {
+- (GTReference *)createReferenceNamed:(NSString *)name fromOID:(GTOID *)targetOID message:(NSString *)message error:(NSError **)error {
 	NSParameterAssert(name != nil);
 	NSParameterAssert(targetOID != nil);
 
 	git_reference *ref;
-	int gitError = git_reference_create(&ref, self.git_repository, name.UTF8String, targetOID.git_oid, 0, signature.git_signature, message.UTF8String);
+	int gitError = git_reference_create(&ref, self.git_repository, name.UTF8String, targetOID.git_oid, 0, message.UTF8String);
 	if (gitError != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to create direct reference to %@", targetOID];
 		return nil;
@@ -505,13 +499,13 @@ static int GTRepositoryForeachTagCallback(const char *name, git_oid *oid, void *
 	return [[GTReference alloc] initWithGitReference:ref repository:self];
 }
 
-- (GTReference *)createReferenceNamed:(NSString *)name fromReference:(GTReference *)targetRef committer:(GTSignature *)signature message:(NSString *)message error:(NSError **)error {
+- (GTReference *)createReferenceNamed:(NSString *)name fromReference:(GTReference *)targetRef message:(NSString *)message error:(NSError **)error {
 	NSParameterAssert(name != nil);
 	NSParameterAssert(targetRef != nil);
 	NSParameterAssert(targetRef.name != nil);
 
 	git_reference *ref;
-	int gitError = git_reference_symbolic_create(&ref, self.git_repository, name.UTF8String, targetRef.name.UTF8String, 0, signature.git_signature, message.UTF8String);
+	int gitError = git_reference_symbolic_create(&ref, self.git_repository, name.UTF8String, targetRef.name.UTF8String, 0, message.UTF8String);
 	if (gitError != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to create symbolic reference to %@", targetRef];
 		return nil;
@@ -520,11 +514,11 @@ static int GTRepositoryForeachTagCallback(const char *name, git_oid *oid, void *
 	return [[GTReference alloc] initWithGitReference:ref repository:self];
 }
 
-- (GTBranch *)createBranchNamed:(NSString *)name fromOID:(GTOID *)targetOID committer:(GTSignature *)signature message:(NSString *)message error:(NSError **)error {
+- (GTBranch *)createBranchNamed:(NSString *)name fromOID:(GTOID *)targetOID message:(NSString *)message error:(NSError **)error {
 	NSParameterAssert(name != nil);
 	NSParameterAssert(targetOID != nil);
 
-	GTReference *newRef = [self createReferenceNamed:[GTBranch.localNamePrefix stringByAppendingString:name] fromOID:targetOID committer:signature message:message error:error];
+	GTReference *newRef = [self createReferenceNamed:[GTBranch.localNamePrefix stringByAppendingString:name] fromOID:targetOID message:message error:error];
 	if (newRef == nil) return nil;
 
 	return [GTBranch branchWithReference:newRef repository:self];
@@ -677,16 +671,6 @@ static int submoduleEnumerationCallback(git_submodule *git_submodule, const char
 	return 0;
 }
 
-- (BOOL)reloadSubmodules:(NSError **)error {
-	int gitError = git_submodule_reload_all(self.git_repository, 0);
-	if (gitError != GIT_OK) {
-		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to reload submodules."];
-		return NO;
-	}
-
-	return YES;
-}
-
 - (void)enumerateSubmodulesRecursively:(BOOL)recursive usingBlock:(void (^)(GTSubmodule *submodule, NSError *error, BOOL *stop))block {
 	NSParameterAssert(block != nil);
 
@@ -716,24 +700,33 @@ static int submoduleEnumerationCallback(git_submodule *git_submodule, const char
 
 #pragma mark User
 
++ (NSString *)defaultUserName {
+	NSString *name = NSFullUserName();
+	if (name.length == 0) name = NSUserName();
+	if (name.length == 0) name = @"nobody";
+	return name;
+}
+
++ (NSString *)defaultEmail {
+	NSString *username = NSUserName();
+	if (username.length == 0) username = @"nobody";
+	NSString *domain = NSProcessInfo.processInfo.hostName ?: @"nowhere.local";
+	return [NSString stringWithFormat:@"%@@%@", username, domain];
+}
+
 - (GTSignature *)userSignatureForNow {
 	GTConfiguration *configuration = [self configurationWithError:NULL];
 	NSString *name = [configuration stringForKey:@"user.name"];
-	if (name.length == 0) {
-		name = NSFullUserName();
-		if (name.length == 0) name = NSUserName();
-		if (name.length == 0) name = @"nobody";
-	}
+	if (name.length == 0) name = self.class.defaultUserName;
 
 	NSString *email = [configuration stringForKey:@"user.email"];
-	if (email == nil) {
-		NSString *username = NSUserName();
-		if (username.length == 0) username = @"nobody";
-		NSString *domain = NSProcessInfo.processInfo.hostName ?: @"nowhere.local";
-		email = [NSString stringWithFormat:@"%@@%@", username, domain];
-	}
+	if (email.length == 0) email = self.class.defaultEmail;
 
-	return [[GTSignature alloc] initWithName:name email:email time:[NSDate date]];
+	NSDate *now = [NSDate date];
+	GTSignature *signature = [[GTSignature alloc] initWithName:name email:email time:now];
+	if (signature != nil) return signature;
+
+	return [[GTSignature alloc] initWithName:self.class.defaultUserName email:self.class.defaultEmail time:now];
 }
 
 #pragma mark Tagging
@@ -789,7 +782,7 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 - (BOOL)moveHEADToReference:(GTReference *)reference error:(NSError **)error {
 	NSParameterAssert(reference != nil);
 
-	int gitError = git_repository_set_head(self.git_repository, reference.name.UTF8String, [self userSignatureForNow].git_signature, NULL);
+	int gitError = git_repository_set_head(self.git_repository, reference.name.UTF8String);
 	if (gitError != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to move HEAD to reference %@", reference.name];
 	}
@@ -800,7 +793,7 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 - (BOOL)moveHEADToCommit:(GTCommit *)commit error:(NSError **)error {
 	NSParameterAssert(commit != nil);
 
-	int gitError = git_repository_set_head_detached(self.git_repository, commit.OID.git_oid, [self userSignatureForNow].git_signature, NULL);
+	int gitError = git_repository_set_head_detached(self.git_repository, commit.OID.git_oid);
 	if (gitError != GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to move HEAD to commit %@", commit.SHA];
 	}
@@ -808,7 +801,7 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 	return gitError == GIT_OK;
 }
 
-- (BOOL)performCheckoutWithStrategy:(GTCheckoutStrategyType)strategy notifyFlags:(GTCheckoutNotifyFlags)notifyFlags error:(NSError **)error progressBlock:(GTCheckoutProgressBlock)progressBlock notifyBlock:(GTCheckoutNotifyBlock)notifyBlock {
+- (BOOL)performCheckout:(GTObject *)target withStrategy:(GTCheckoutStrategyType)strategy notifyFlags:(GTCheckoutNotifyFlags)notifyFlags error:(NSError **)error progressBlock:(GTCheckoutProgressBlock)progressBlock notifyBlock:(GTCheckoutNotifyBlock)notifyBlock {
 
 	git_checkout_options checkoutOptions = GIT_CHECKOUT_OPTIONS_INIT;
 
@@ -820,7 +813,7 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 	checkoutOptions.notify_flags = notifyFlags;
 	checkoutOptions.notify_payload = (__bridge void *)notifyBlock;
 
-	int gitError = git_checkout_head(self.git_repository, &checkoutOptions);
+	int gitError = git_checkout_tree(self.git_repository, target.git_object, &checkoutOptions);
 	if (gitError < GIT_OK) {
 		if (error != NULL) *error = [NSError git_errorFor:gitError description:@"Failed to checkout tree."];
 	}
@@ -829,17 +822,18 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 }
 
 - (BOOL)checkoutCommit:(GTCommit *)targetCommit strategy:(GTCheckoutStrategyType)strategy notifyFlags:(GTCheckoutNotifyFlags)notifyFlags error:(NSError **)error progressBlock:(GTCheckoutProgressBlock)progressBlock notifyBlock:(GTCheckoutNotifyBlock)notifyBlock {
-	BOOL success = [self moveHEADToCommit:targetCommit error:error];
+	BOOL success = [self performCheckout:targetCommit withStrategy:strategy notifyFlags:notifyFlags error:error progressBlock:progressBlock notifyBlock:notifyBlock];
 	if (success == NO) return NO;
-
-	return [self performCheckoutWithStrategy:strategy notifyFlags:notifyFlags error:error progressBlock:progressBlock notifyBlock:notifyBlock];
+	return [self moveHEADToCommit:targetCommit error:error];
 }
 
 - (BOOL)checkoutReference:(GTReference *)targetReference strategy:(GTCheckoutStrategyType)strategy notifyFlags:(GTCheckoutNotifyFlags)notifyFlags error:(NSError **)error progressBlock:(GTCheckoutProgressBlock)progressBlock notifyBlock:(GTCheckoutNotifyBlock)notifyBlock {
-	BOOL success = [self moveHEADToReference:targetReference error:error];
+	GTOID *targetOID = [targetReference targetOID];
+	GTObject *target = [self lookUpObjectByOID:targetOID error:error];
+	if (target == nil) return NO;
+	BOOL success = [self performCheckout:target withStrategy:strategy notifyFlags:notifyFlags error:error progressBlock:progressBlock notifyBlock:notifyBlock];
 	if (success == NO) return NO;
-
-	return [self performCheckoutWithStrategy:strategy notifyFlags:notifyFlags error:error progressBlock:progressBlock notifyBlock:notifyBlock];
+	return [self moveHEADToReference:targetReference error:error];
 }
 
 - (BOOL)checkoutCommit:(GTCommit *)target strategy:(GTCheckoutStrategyType)strategy error:(NSError **)error progressBlock:(GTCheckoutProgressBlock)progressBlock {
@@ -872,6 +866,36 @@ static int checkoutNotifyCallback(git_checkout_notify_t why, const char *path, c
 	} else {
 		return [[GTFilterList alloc] initWithGitFilterList:list];
 	}
+}
+
+- (BOOL)calculateAhead:(size_t *)ahead behind:(size_t *)behind ofOID:(GTOID *)headOID relativeToOID:(GTOID *)baseOID error:(NSError **)error {
+	NSParameterAssert(headOID != nil);
+	NSParameterAssert(baseOID != nil);
+
+	int errorCode = git_graph_ahead_behind(ahead, behind, self.git_repository, headOID.git_oid, baseOID.git_oid);
+	if (errorCode != GIT_OK) {
+		if (error != NULL) *error = [NSError git_errorFor:errorCode description:@"Failed to calculate ahead/behind count of %@ relative to %@", headOID, baseOID];
+
+		return NO;
+	}
+
+	return YES;
+}
+
+- (nullable GTEnumerator *)enumeratorForUniqueCommitsFromOID:(GTOID *)fromOID relativeToOID:(GTOID *)relativeOID error:(NSError **)error {
+	NSParameterAssert(fromOID != nil);
+	NSParameterAssert(relativeOID != nil);
+
+	GTEnumerator *enumerator = [[GTEnumerator alloc] initWithRepository:self error:error];
+	if (enumerator == nil) return nil;
+
+	BOOL success = [enumerator pushSHA:fromOID.SHA error:error];
+	if (!success) return nil;
+
+	success = [enumerator hideSHA:relativeOID.SHA error:error];
+	if (!success) return nil;
+
+	return enumerator;
 }
 
 @end

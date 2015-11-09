@@ -14,6 +14,10 @@
 
 QuickSpecBegin(GTRepositorySpec)
 
+static NSString * const readmeFile = @"README.md";
+static NSString * const readme1File = @"README1.txt";
+
+
 __block GTRepository *repository;
 
 beforeEach(^{
@@ -64,7 +68,7 @@ describe(@"+repositoryWithURL:error:", ^{
 describe(@"+cloneFromURL:toWorkingDirectory:options:error:transferProgressBlock:checkoutProgressBlock:", ^{
 	__block BOOL transferProgressCalled = NO;
 	__block BOOL checkoutProgressCalled = NO;
-	__block void (^transferProgressBlock)(const git_transfer_progress *);
+	__block void (^transferProgressBlock)(const git_transfer_progress *, BOOL *);
 	__block void (^checkoutProgressBlock)(NSString *, NSUInteger, NSUInteger);
 	__block NSURL *originURL;
 	__block NSURL *workdirURL;
@@ -74,7 +78,7 @@ describe(@"+cloneFromURL:toWorkingDirectory:options:error:transferProgressBlock:
 	beforeEach(^{
 		transferProgressCalled = NO;
 		checkoutProgressCalled = NO;
-		transferProgressBlock = ^(const git_transfer_progress *progress) {
+		transferProgressBlock = ^(const git_transfer_progress *progress, BOOL *stop) {
             transferProgressCalled = YES;
         };
 		checkoutProgressBlock = ^(NSString *path, NSUInteger completedSteps, NSUInteger totalSteps) {
@@ -102,7 +106,7 @@ describe(@"+cloneFromURL:toWorkingDirectory:options:error:transferProgressBlock:
 			GTReference *head = [repository headReferenceWithError:&error];
 			expect(head).notTo(beNil());
 			expect(error).to(beNil());
-			expect(head.targetSHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
+			expect(head.targetOID.SHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
 			expect(@(head.referenceType)).to(equal(@(GTReferenceTypeOid)));
 		});
 
@@ -120,7 +124,7 @@ describe(@"+cloneFromURL:toWorkingDirectory:options:error:transferProgressBlock:
 			GTReference *head = [repository headReferenceWithError:&error];
 			expect(head).notTo(beNil());
 			expect(error).to(beNil());
-			expect(head.targetSHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
+			expect(head.targetOID.SHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
 			expect(@(head.referenceType)).to(equal(@(GTReferenceTypeOid)));
 		});
 
@@ -183,7 +187,7 @@ describe(@"-headReferenceWithError:", ^{
 		GTReference *head = [self.bareFixtureRepository headReferenceWithError:&error];
 		expect(head).notTo(beNil());
 		expect(error).to(beNil());
-		expect(head.targetSHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
+		expect(head.targetOID.SHA).to(equal(@"36060c58702ed4c2a40832c51758d5344201d89a"));
 		expect(@(head.referenceType)).to(equal(@(GTReferenceTypeOid)));
 	});
 
@@ -276,13 +280,13 @@ describe(@"-createBranchNamed:fromOID:committer:message:error:", ^{
 		NSString *branchName = @"new-test-branch";
 
 		NSError *error = nil;
-		GTBranch *newBranch = [repository createBranchNamed:branchName fromOID:[[GTOID alloc] initWithSHA:currentBranch.SHA] committer:nil message:nil error:&error];
+		GTBranch *newBranch = [repository createBranchNamed:branchName fromOID:currentBranch.OID message:nil error:&error];
 		expect(newBranch).notTo(beNil());
 		expect(error).to(beNil());
 
 		expect(newBranch.shortName).to(equal(branchName));
 		expect(@(newBranch.branchType)).to(equal(@(GTBranchTypeLocal)));
-		expect(newBranch.SHA).to(equal(currentBranch.SHA));
+		expect(newBranch.OID).to(equal(currentBranch.OID));
 	});
 });
 
@@ -357,7 +361,7 @@ describe(@"-OIDByCreatingTagNamed:target:tagger:message:error", ^{
 describe(@"-checkout:strategy:error:progressBlock:", ^{
 	it(@"should allow references", ^{
 		NSError *error = nil;
-		GTReference *ref = [GTReference referenceByLookingUpReferencedNamed:@"refs/heads/other-branch" inRepository:repository error:&error];
+		GTReference *ref = [repository lookUpReferenceWithName:@"refs/heads/other-branch" error:&error];
 		expect(ref).notTo(beNil());
 		expect(error.localizedDescription).to(beNil());
 		BOOL result = [repository checkoutReference:ref strategy:GTCheckoutStrategyAllowConflicts error:&error progressBlock:nil];
@@ -373,6 +377,58 @@ describe(@"-checkout:strategy:error:progressBlock:", ^{
 		BOOL result = [repository checkoutCommit:commit strategy:GTCheckoutStrategyAllowConflicts error:&error progressBlock:nil];
 		expect(@(result)).to(beTruthy());
 		expect(error.localizedDescription).to(beNil());
+	});
+});
+
+describe(@"-checkout:strategy:notifyFlags:error:notifyBlock:progressBlock:", ^{
+	it(@"should fail ref checkout with conflict and notify", ^{
+		NSError *error = nil;
+		GTReference *ref = [repository lookUpReferenceWithName:@"refs/heads/other-branch" error:&error];
+		expect(ref).notTo(beNil());
+		expect(error.localizedDescription).to(beNil());
+		BOOL writeResult = [@"Conflicting data in README.md\n" writeToURL:[repository.fileURL URLByAppendingPathComponent:readmeFile] atomically:YES encoding:NSUTF8StringEncoding error:&error];
+		expect(@(writeResult)).to(beTruthy());
+		__block NSUInteger notifyCount = 0;
+		__block BOOL readmeFileConflicted = NO;
+		int (^notifyBlock)(GTCheckoutNotifyFlags, NSString *, GTDiffFile *, GTDiffFile *, GTDiffFile *);
+		notifyBlock = ^(GTCheckoutNotifyFlags why, NSString *path, GTDiffFile *baseline, GTDiffFile *target, GTDiffFile *workdir) {
+			notifyCount++;
+			if([path isEqualToString:readmeFile] && (why & GTCheckoutNotifyConflict)) {
+				readmeFileConflicted = YES;
+			}
+			return 0;
+		};
+
+		BOOL result = [repository checkoutReference:ref strategy:GTCheckoutStrategySafe notifyFlags:GTCheckoutNotifyConflict error:&error progressBlock:nil notifyBlock:notifyBlock];
+		expect(@(notifyCount)).to(equal(@(1)));
+		expect(@(readmeFileConflicted)).to(beTruthy());
+		expect(@(result)).to(beFalsy());
+		expect(@(error.code)).to(equal(@(GIT_ECONFLICT)));
+	});
+
+	it(@"should fail commit checkout with conflict and notify", ^{
+		NSError *error = nil;
+		GTCommit *commit = [repository lookUpObjectBySHA:@"1d69f3c0aeaf0d62e25591987b93b8ffc53abd77" objectType:GTObjectTypeCommit error:&error];
+		expect(commit).notTo(beNil());
+		expect(error.localizedDescription).to(beNil());
+		BOOL writeResult = [@"Conflicting data in README1.txt\n" writeToURL:[repository.fileURL URLByAppendingPathComponent:readme1File] atomically:YES encoding:NSUTF8StringEncoding error:&error];
+		expect(@(writeResult)).to(beTruthy());
+		__block NSUInteger notifyCount = 0;
+		__block BOOL readme1FileConflicted = NO;
+		int (^notifyBlock)(GTCheckoutNotifyFlags, NSString *, GTDiffFile *, GTDiffFile *, GTDiffFile *);
+		notifyBlock = ^(GTCheckoutNotifyFlags why, NSString *path, GTDiffFile *baseline, GTDiffFile *target, GTDiffFile *workdir) {
+			notifyCount++;
+			if([path isEqualToString:readme1File] && (why & GTCheckoutNotifyConflict)) {
+				readme1FileConflicted = YES;
+			}
+			return 0;
+		};
+
+		BOOL result = [repository checkoutCommit:commit strategy:GTCheckoutStrategySafe notifyFlags:GTCheckoutNotifyConflict error:&error progressBlock:nil notifyBlock:notifyBlock];
+		expect(@(notifyCount)).to(equal(@(1)));
+		expect(@(readme1FileConflicted)).to(beTruthy());
+		expect(@(result)).to(beFalsy());
+		expect(@(error.code)).to(equal(@(GIT_ECONFLICT)));
 	});
 });
 
@@ -409,7 +465,7 @@ describe(@"-resetToCommit:withResetType:error:", ^{
 
 		GTCommit *commit = [repository lookUpObjectBySHA:resetTargetSHA error:NULL];
 		expect(commit).notTo(beNil());
-		GTCommit *originalHeadCommit = [repository lookUpObjectBySHA:originalHead.targetSHA error:NULL];
+		GTCommit *originalHeadCommit = [repository lookUpObjectByOID:originalHead.targetOID error:NULL];
 		expect(originalHeadCommit).notTo(beNil());
 
 		BOOL success = [repository resetToCommit:commit resetType:GTRepositoryResetTypeSoft error:&error];
@@ -418,14 +474,14 @@ describe(@"-resetToCommit:withResetType:error:", ^{
 
 		GTReference *head = [repository headReferenceWithError:&error];
 		expect(head).notTo(beNil());
-		expect(head.targetSHA).to(equal(resetTargetSHA));
+		expect(head.targetOID.SHA).to(equal(resetTargetSHA));
 
 		success = [repository resetToCommit:originalHeadCommit resetType:GTRepositoryResetTypeSoft error:&error];
 		expect(@(success)).to(beTruthy());
 		expect(error).to(beNil());
 
 		head = [repository headReferenceWithError:&error];
-		expect(head.targetSHA).to(equal(originalHead.targetSHA));
+		expect(head.targetOID).to(equal(originalHead.targetOID));
 	});
 });
 
@@ -539,6 +595,56 @@ describe(@"-branches:", ^{
 			}
 		}
 		expect(@(matches)).to(equal(@2));
+	});
+});
+
+describe(@"-userSignatureForNow", ^{
+	static NSString * const userName = @"johnsmith";
+	static NSString * const email = @"johnsmith@gmail.com";
+
+	__block GTConfiguration *configuration;
+
+	beforeEach(^{
+		configuration = [repository configurationWithError:NULL];
+		expect(configuration).notTo(beNil());
+	});
+
+	it(@"should use the values from the config", ^{
+		[configuration setString:userName forKey:@"user.name"];
+		[configuration setString:email forKey:@"user.email"];
+
+		GTSignature *signature = [repository userSignatureForNow];
+		expect(signature.name).to(equal(userName));
+		expect(signature.email).to(equal(email));
+	});
+
+	describe(@"invalid values", ^{
+		it(@"should use a default value if the name is empty", ^{
+			[configuration setString:@"" forKey:@"user.name"];
+			[configuration setString:email forKey:@"user.email"];
+
+			GTSignature *signature = [repository userSignatureForNow];
+			expect(@(signature.name.length)).to(beGreaterThan(@0));
+			expect(@(signature.email.length)).to(beGreaterThan(@0));
+		});
+
+		it(@"should use a default value if the email is empty", ^{
+			[configuration setString:userName forKey:@"user.name"];
+			[configuration setString:@"" forKey:@"user.email"];
+
+			GTSignature *signature = [repository userSignatureForNow];
+			expect(@(signature.name.length)).to(beGreaterThan(@0));
+			expect(@(signature.email.length)).to(beGreaterThan(@0));
+		});
+
+		it(@"should use a default value if the email contains angled brackets", ^{
+			[configuration setString:userName forKey:@"user.name"];
+			[configuration setString:@"<johnsmith@gmail.com>" forKey:@"user.email"];
+
+			GTSignature *signature = [repository userSignatureForNow];
+			expect(@(signature.name.length)).to(beGreaterThan(@0));
+			expect(@(signature.email.length)).to(beGreaterThan(@0));
+		});
 	});
 });
 

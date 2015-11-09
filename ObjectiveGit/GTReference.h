@@ -28,7 +28,6 @@
 
 @class GTOID;
 @class GTReflog;
-@class GTSignature;
 
 typedef NS_ENUM(NSInteger, GTReferenceErrorCode) {
 	GTReferenceErrorCodeInvalidReference = -4,
@@ -39,6 +38,8 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 	GTReferenceTypeOid =        GIT_REF_OID,      /** A reference which points at an object id */
 	GTReferenceTypeSymbolic =   GIT_REF_SYMBOLIC, /** A reference which points at another reference */
 };
+
+NS_ASSUME_NONNULL_BEGIN
 
 @class GTRepository;
 
@@ -60,13 +61,18 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 @property (nonatomic, readonly, strong) GTReflog *reflog;
 
 /// Convenience initializers
-+ (id)referenceByLookingUpReferencedNamed:(NSString *)refName inRepository:(GTRepository *)theRepo error:(NSError **)error;
-- (id)initByLookingUpReferenceNamed:(NSString *)refName inRepository:(GTRepository *)theRepo error:(NSError **)error;
++ (nullable instancetype)referenceByResolvingSymbolicReference:(GTReference *)symbolicRef error:(NSError **)error;
+- (nullable instancetype)initByResolvingSymbolicReference:(GTReference *)symbolicRef error:(NSError **)error;
 
-+ (id)referenceByResolvingSymbolicReference:(GTReference *)symbolicRef error:(NSError **)error;
-- (id)initByResolvingSymbolicReference:(GTReference *)symbolicRef error:(NSError **)error;
+- (instancetype)init NS_UNAVAILABLE;
 
-- (id)initWithGitReference:(git_reference *)ref repository:(GTRepository *)repository;
+/// Designated initializer.
+///
+/// ref        - The reference to wrap. Must not be nil.
+/// repository - The repository containing the reference. Must not be nil.
+///
+/// Returns the initialized receiver.
+- (nullable instancetype)initWithGitReference:(git_reference *)ref repository:(GTRepository *)repository NS_DESIGNATED_INITIALIZER;
 
 /// The underlying `git_reference` object.
 - (git_reference *)git_reference __attribute__((objc_returns_inner_pointer));
@@ -80,8 +86,8 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 /// The last direct reference in a chain
 @property (nonatomic, readonly, copy) GTReference *resolvedReference;
 
-/// The SHA of the target object
-@property (nonatomic, readonly, copy) NSString *targetSHA;
+/// The OID of the target object.
+@property (nonatomic, readonly, copy) GTOID *targetOID;
 
 /// Updates the on-disk reference to point to the target and returns the updated
 /// reference.
@@ -89,17 +95,15 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 /// Note that this does *not* change the receiver's target.
 ///
 /// newTarget - The target for the new reference. This must not be nil.
-/// signature - A signature for the committer updating this ref, used for
-///             creating a reflog entry. This may be nil.
 /// message   - A message to use when creating the reflog entry for this action.
 ///             This may be nil.
 /// error     - The error if one occurred.
 ///
 /// Returns the updated reference, or nil if an error occurred.
-- (GTReference *)referenceByUpdatingTarget:(NSString *)newTarget committer:(GTSignature *)signature message:(NSString *)message error:(NSError **)error;
+- (nullable GTReference *)referenceByUpdatingTarget:(NSString *)newTarget message:(nullable NSString *)message error:(NSError **)error;
 
 /// The name of the reference.
-@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy, nullable) NSString *name;
 
 /// Updates the on-disk reference to the name and returns the renamed reference.
 ///
@@ -109,7 +113,7 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 /// error   - The error if one occurred.
 ///
 /// Returns the renamed reference, or nil if an error occurred.
-- (GTReference *)referenceByRenaming:(NSString *)newName error:(NSError **)error;
+- (nullable GTReference *)referenceByRenaming:(NSString *)newName error:(NSError **)error;
 
 /// Delete this reference.
 ///
@@ -123,14 +127,14 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 /// error(out) - will be filled if an error occurs
 ///
 /// returns the peeled GTReference or nil if an error occurred.
-- (GTReference *)resolvedReferenceWithError:(NSError **)error;
+- (nullable GTReference *)resolvedReferenceWithError:(NSError **)error;
 
 /// Reload the reference from disk.
 ///
 /// error - The error if one occurred.
 ///
 /// Returns the reloaded reference, or nil if an error occurred.
-- (GTReference *)reloadedReferenceWithError:(NSError **)error;
+- (nullable GTReference *)reloadedReferenceWithError:(NSError **)error;
 
 /// An error indicating that the git_reference is no longer valid.
 + (NSError *)invalidReferenceError;
@@ -143,3 +147,5 @@ typedef NS_OPTIONS(NSInteger, GTReferenceType) {
 + (BOOL)isValidReferenceName:(NSString *)refName;
 
 @end
+
+NS_ASSUME_NONNULL_END

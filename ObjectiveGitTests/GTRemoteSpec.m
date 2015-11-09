@@ -11,11 +11,13 @@
 #import <Quick/Quick.h>
 
 #import "QuickSpec+GTFixtures.h"
+#import "GTUtilityFunctions.h"
 
 QuickSpecBegin(GTRemoteSpec)
 
 __block GTRemote *remote = nil;
 __block GTRepository *repository = nil;
+__block GTConfiguration *configuration = nil;
 NSString *fetchRefspec = @"+refs/heads/*:refs/remotes/origin/*";
 
 beforeEach(^{
@@ -23,7 +25,7 @@ beforeEach(^{
 	expect(repository).notTo(beNil());
 
 	NSError *error = nil;
-	GTConfiguration *configuration = [repository configurationWithError:&error];
+	configuration = [repository configurationWithError:&error];
 	expect(configuration).notTo(beNil());
 	expect(error).to(beNil());
 
@@ -53,6 +55,9 @@ describe(@"updating", ^{
 		expect(@([remote updateURLString:newURLString error:&error])).to(beTruthy());
 		expect(error).to(beNil());
 
+		// Reload remote from disk to pick up the change
+		remote = configuration.remotes[0];
+
 		expect(remote.URLString).to(equal(newURLString));
 	});
 
@@ -64,6 +69,9 @@ describe(@"updating", ^{
 		__block NSError *error = nil;
 		expect(@([remote addFetchRefspec:newFetchRefspec error:&error])).to(beTruthy());
 		expect(error).to(beNil());
+
+		// Reload remote from disk to pick up the change
+		remote = configuration.remotes[0];
 
 		expect(remote.fetchRefspecs).to(equal((@[ fetchRefspec, newFetchRefspec ])));
 	});
@@ -133,26 +141,6 @@ describe(@"network operations", ^{
 		});
 	});
 
-	// Helper to quickly create commits
-	GTCommit *(^createCommitInRepository)(NSString *, NSData *, NSString *, GTRepository *) = ^(NSString *message, NSData *fileData, NSString *fileName, GTRepository *repo) {
-		GTTreeBuilder *treeBuilder = [[GTTreeBuilder alloc] initWithTree:nil repository:repo error:nil];
-		[treeBuilder addEntryWithData:fileData fileName:fileName fileMode:GTFileModeBlob error:nil];
-
-		GTTree *testTree = [treeBuilder writeTree:nil];
-
-		// We need the parent commit to make the new one
-		GTReference *headReference = [repo headReferenceWithError:nil];
-
-		GTEnumerator *commitEnum = [[GTEnumerator alloc] initWithRepository:repo error:nil];
-		[commitEnum pushSHA:[headReference targetSHA] error:nil];
-		GTCommit *parent = [commitEnum nextObject];
-
-		GTCommit *testCommit = [repo createCommitWithTree:testTree message:message parents:@[parent] updatingReferenceNamed:headReference.name error:nil];
-		expect(testCommit).notTo(beNil());
-
-		return testCommit;
-	};
-
 	describe(@"-[GTRepository fetchRemote:withOptions:error:progress:]", ^{
 		it(@"allows remotes to be fetched", ^{
 			NSError *error = nil;
@@ -184,7 +172,7 @@ describe(@"network operations", ^{
 			expect(error).to(beNil());
 			expect(@(success)).to(beTruthy());
 			expect(@(transferProgressed)).to(beTruthy());
-			expect(@(receivedObjects)).to(equal(@10));
+			expect(@(receivedObjects)).to(beGreaterThan(@0));
 
 			GTCommit *fetchedCommit = [fetchingRepo lookUpObjectByOID:testCommit.OID objectType:GTObjectTypeCommit error:&error];
 			expect(error).to(beNil());

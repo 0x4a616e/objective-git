@@ -42,7 +42,12 @@ static NSMutableDictionary *GTFiltersGitFilterToRegisteredFilters = nil;
 	GTFiltersGitFilterToRegisteredFilters = [[NSMutableDictionary alloc] init];
 }
 
-- (id)initWithName:(NSString *)name attributes:(NSString *)attributes applyBlock:(NSData * (^)(void **payload, NSData *from, GTFilterSource *source, BOOL *applied))applyBlock {
+- (instancetype)init {
+	NSAssert(NO, @"Call to an unavailable initializer.");
+	return nil;
+}
+
+- (instancetype)initWithName:(NSString *)name attributes:(NSString *)attributes applyBlock:(NSData * (^)(void **payload, NSData *from, GTFilterSource *source, BOOL *applied))applyBlock {
 	NSParameterAssert(name != nil);
 	NSParameterAssert(applyBlock != NULL);
 

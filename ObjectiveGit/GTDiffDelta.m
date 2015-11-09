@@ -32,7 +32,7 @@
 ///                  the given diff delta. Must not be nil.
 ///
 /// This is the designated initializer for this class.
-- (instancetype)initWithGitDiffDeltaBlock:(git_diff_delta (^)(void))deltaAccessor patchGeneratorBlock:(int (^)(git_patch **patch))patchGenerator;
+- (instancetype)initWithGitDiffDeltaBlock:(git_diff_delta (^)(void))deltaAccessor patchGeneratorBlock:(int (^)(git_patch **patch))patchGenerator NS_DESIGNATED_INITIALIZER;
 
 @end
 
@@ -73,7 +73,7 @@ static int GTDiffDeltaCallback(const git_diff_delta *delta, float progress, void
 	__block git_diff_delta diffDelta;
 
 	int returnValue = [GTDiff handleParsedOptionsDictionary:options usingBlock:^(git_diff_options *optionsStruct) {
-		return git_diff_blobs(oldBlob.git_blob, oldBlobPath.UTF8String, newBlob.git_blob, newBlobPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, &diffDelta);
+		return git_diff_blobs(oldBlob.git_blob, oldBlobPath.UTF8String, newBlob.git_blob, newBlobPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, NULL, &diffDelta);
 	}];
 
 	if (returnValue != GIT_OK) {
@@ -94,7 +94,7 @@ static int GTDiffDeltaCallback(const git_diff_delta *delta, float progress, void
 	__block git_diff_delta diffDelta;
 
 	int returnValue = [GTDiff handleParsedOptionsDictionary:options usingBlock:^(git_diff_options *optionsStruct) {
-		return git_diff_blob_to_buffer(blob.git_blob, blobPath.UTF8String, data.bytes, data.length, dataPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, &diffDelta);
+		return git_diff_blob_to_buffer(blob.git_blob, blobPath.UTF8String, data.bytes, data.length, dataPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, NULL, &diffDelta);
 	}];
 
 	if (returnValue != GIT_OK) {
@@ -115,7 +115,7 @@ static int GTDiffDeltaCallback(const git_diff_delta *delta, float progress, void
 	__block git_diff_delta diffDelta;
 
 	int returnValue = [GTDiff handleParsedOptionsDictionary:options usingBlock:^(git_diff_options *optionsStruct) {
-		return git_diff_buffers(oldData.bytes, oldData.length, oldDataPath.UTF8String, newData.bytes, newData.length, newDataPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, &diffDelta);
+		return git_diff_buffers(oldData.bytes, oldData.length, oldDataPath.UTF8String, newData.bytes, newData.length, newDataPath.UTF8String, optionsStruct, &GTDiffDeltaCallback, NULL, NULL, NULL, &diffDelta);
 	}];
 
 	if (returnValue != GIT_OK) {
@@ -130,6 +130,11 @@ static int GTDiffDeltaCallback(const git_diff_delta *delta, float progress, void
 			return git_patch_from_buffers(patch, oldData.bytes, oldData.length, oldDataPath.UTF8String, newData.bytes, newData.length, newDataPath.UTF8String, optionsStruct);
 		}];
 	}];
+}
+
+- (instancetype)init {
+	NSAssert(NO, @"Call to an unavailable initializer.");
+	return nil;
 }
 
 - (instancetype)initWithDiff:(GTDiff *)diff deltaIndex:(NSUInteger)deltaIndex {

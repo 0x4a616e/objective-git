@@ -26,14 +26,16 @@ typedef NS_ENUM(NSInteger, GTStatusDeltaStatus) {
 	GTStatusDeltaStatusTypeChange = GIT_DELTA_TYPECHANGE,
 };
 
+NS_ASSUME_NONNULL_BEGIN
+
 /// Represents the status of a file in a repository.
 @interface GTStatusDelta : NSObject
 
 /// The file as it was prior to the change represented by this status delta.
-@property (nonatomic, readonly, copy) GTDiffFile *oldFile;
+@property (nonatomic, readonly, copy, nullable) GTDiffFile *oldFile;
 
 /// The file after the change represented by this status delta
-@property (nonatomic, readonly, copy) GTDiffFile *newFile __attribute__((ns_returns_not_retained));
+@property (nonatomic, readonly, copy, nullable) GTDiffFile *newFile __attribute__((ns_returns_not_retained));
 
 /// The status of the file.
 @property (nonatomic, readonly) GTStatusDeltaStatus status;
@@ -45,7 +47,11 @@ typedef NS_ENUM(NSInteger, GTStatusDeltaStatus) {
 /// `GTStatusDeltaStatusCopied`.
 @property (nonatomic, readonly) double similarity;
 
+- (instancetype)init NS_UNAVAILABLE;
+
 /// Designated initializer.
-- (instancetype)initWithGitDiffDelta:(const git_diff_delta *)delta;
+- (nullable instancetype)initWithGitDiffDelta:(const git_diff_delta *)delta NS_DESIGNATED_INITIALIZER;
 
 @end
+
+NS_ASSUME_NONNULL_END
